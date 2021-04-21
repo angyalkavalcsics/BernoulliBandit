@@ -1,0 +1,513 @@
+#Simulate Bernoulli trials: toy example
+
+N = 10000
+coin1 <- rbinom(n = N, 
+                size = 1,
+                prob = 0.02)
+coin2 <- rbinom(n = N, 
+                size = 1,
+                prob = 0.027)
+coin3 <- rbinom(n = N, 
+                size = 1,
+                prob = 0.01)
+
+data <- data.frame(coin1, coin2, coin3)
+
+colSums(data)
+
+# Random selection: 
+
+# Nothing is learned, we pick coins randomly and never find the 
+# optimal coin.
+
+numArms <- 10
+iter <- 10000
+coinSelected <- matrix(0, ncol = 1, nrow = iter)
+totalReward <- 0
+
+for(n in 1:iter){
+   # Make a decision: pick your coin to flip
+   action <- sample(1:numArms, 1, replace = TRUE)
+   # Keep track of decisions
+   coinSelected[n] <- action
+   # Sample from the (simulated) distribution of the coin you picked
+   reward <- data[n, action]
+   # Keep track of total reward
+   totalReward <- totalReward + reward
+}
+totalReward
+hist(coinSelected)
+
+####################################################################
+# Next: let's simulate a 10-arm bandit with bernoulli rewards
+
+# Number of arms (actions)
+num_arms <- 10
+# Number of elements in each distribution for each arm
+N <- 20000
+# Probability of reward
+p <- c(0.08, 0.1, 0.1, 0.15, 0.23, 0.27, 0.25, 0.09, 0.23, 0.1)
+# Fill a matrix with the distribution of reward from each arm, 
+# we will sample from here at each iteration 
+sim_data <- matrix(0, nrow = N, ncol = num_arms)
+for (i in 1:num_arms) {
+   sim_data[,i] <- rbinom(n = N, size = 1, prob = p[i])
+}
+# Can check to see which has the highest number of rewards
+colSums(sim_data)
+
+####################################################################
+# Libraries:
+library(ggplot2)
+####################################################################
+
+# Note that the player does not know the probability
+# distribution of each arm.
+####################################################################
+
+# UCB1
+
+# The confidence bound grows with the total number of
+# actions we have taken but shrinks with the number of times we
+# have tried this particular action. This ensures each action is tried
+# infinitely often but still balances exploration and exploitation.
+UCB1 <- function(iter, num_arms, data, p){
+   # Create an empty integer vector to hold the actions we select
+   action_selected = integer(0) 
+   # Create a vector to hold the number of selections for each arm
+   number_of_selections = integer(num_arms) 
+   # Create a vector to hold the sum of rewards for each arm
+   sum_of_rewards = integer(num_arms) 
+   # Create variable to track total reward 
+   total_reward = 0 
+   # Create vector to track reward 
+   reward_vec = integer(0)
+   # Create variable to track cumulative regret
+   cumulative_regret_var = 0
+   # Create vector to track cumulative regret
+   cumulative_regret_vec = integer(0)
+   # actual winner if the player knew the parameters
+   actual = p[6]
+   # Now we play:
+   for (n in 1:iter) { 
+      # Initialize the current action selected as 0
+      curr_action = 0 
+      # Initialize the max upper bound as 0
+      max_upper_bound = 0 
+      for (i in 1:num_arms) { 
+         # Note that for the first run-through, we haven't selected any of the arms and so
+         # it will always enter the else statement until the initialization is done
+         if (number_of_selections[i] > 0) { 
+            average_reward = sum_of_rewards[i] / number_of_selections[i]
+            delta_i = sqrt(3/2 * log(n) / number_of_selections[i])
+            upper_bound = average_reward + delta_i
+         } else { 
+            # This basically initializes the upper bound for the first num_arms number of iterations
+            upper_bound = 1e400 
+         }
+         if (upper_bound > max_upper_bound) { 
+            # Update the upper bound if there is a new max
+            max_upper_bound = upper_bound
+            # Update the action associated with this new bound
+            curr_action = i
+         }
+      }
+      # Add the action we selected to the history vector
+      action_selected = append(action_selected, curr_action) 
+      # Update the number of times we selected this action
+      number_of_selections[curr_action] = number_of_selections[curr_action] + 1 
+      # Sample from the reward distribution of the action we selected
+      reward = data[n, curr_action]
+      # Update the amount of rewards for the action selected (either 0 or 1)
+      sum_of_rewards[curr_action] = sum_of_rewards[curr_action] + reward
+      # We update the total reward
+      total_reward = total_reward + reward
+      reward_vec = append(reward_vec, total_reward)
+      # Find and track cumulative regret for iteration n
+      cumulative_regret_var = actual*n - total_reward
+      cumulative_regret_vec = append(cumulative_regret_vec, cumulative_regret_var)
+      # This is just for the nice plot, we print every 25 iterations
+      if(n%%25 == 0) {
+         Sys.sleep(0.05)
+         hist(action_selected, main = "Bernoulli Bandit - Upper Confidence Bound", 
+              ylab = "Number of Selections", 
+              xlab = "Action Selected",
+              col = "darksalmon")
+      }
+   }
+   # learned winner
+   winner = which.max(sum_of_rewards)
+   # Total regret is the difference between the player’s accumulated reward and 
+   # the maximum the player could have obtained had they known the parameters 
+   regret = actual*iter - total_reward
+   return(list(total_reward = total_reward, winner = winner, 
+               total_regret = regret, regret_vec = cumulative_regret_vec,
+               reward_vec = reward_vec))
+}
+
+res1 <- UCB1(iter = 5000, num_arms = 10, data = sim_data, p = p)
+res1$total_regret
+res1$regret_vec
+res1$winner
+res1$total_reward
+# Plot of regret for each arm at each iteration 
+plot(res1$regret_vec, main = "Cumulative Regret of UCB1",
+     xlab = "iterations", ylab = "cumulative regret")
+payout_UCB1 = res1$reward_vec
+####################################################################
+
+# Epsilon-greedy
+
+# The best arm is selected for a proportion 1 - eps of the trials,
+# and an arm is selected at random (with uniform probability) for a
+# proportion eps. A typical value is eps = 0.1. 
+
+#This will perform well in situations where making a sub-optimal choice hurts less 
+
+epsilonGreedy <- function(eps, iter, num_arms, data, p){
+   #eps <- 0.3
+   #iter <- 5000
+   #num_arms <- 10
+   #data = sim_data
+   # Create an empty integer vector to hold the actions we select
+   action_selected = integer(0) 
+   # Create a vector to hold the number of selections for each arm
+   number_of_selections = rep(1, num_arms) 
+   # Create a vector to hold the sum of rewards for each arm
+   sum_of_rewards = rep(1, num_arms)
+   # Create variable to track total reward 
+   total_reward = 0 
+   # Create vector to track reward 
+   reward_vec = integer(0)
+   # Create variable to track cumulative regret
+   cumulative_regret_var = 0
+   # Create vector to track cumulative regret
+   cumulative_regret_vec = integer(0)
+   # actual winner if the player knew the parameters
+   actual = p[6]
+   for(n in 1:iter){
+      # Initialize the current action selected as 0
+      curr_action = 0
+      # Sample a value from Unif(0,1)
+      p <- runif(1)
+      # If p < eps, pick a random arm, explore
+      if(p < eps){
+         # Randomly select an arm
+         curr_action = sample(seq(num_arms), 1)
+         # Add the action we selected to the history vector
+         action_selected = append(action_selected, curr_action) 
+         # Update the number of times we selected this action
+         number_of_selections[curr_action] = number_of_selections[curr_action] + 1 
+         # Sample from the reward distribution of the action we selected
+         reward = data[n, curr_action] 
+         # Update the amount of rewards for the action selected (either 0 or 1)
+         sum_of_rewards[curr_action] = sum_of_rewards[curr_action] + reward
+         # Finally we update the total reward
+         total_reward = total_reward + reward
+         reward_vec = append(reward_vec, total_reward)
+         # Find and track cumulative regret for iteration n
+         cumulative_regret_var = actual*n - total_reward
+         cumulative_regret_vec = append(cumulative_regret_vec, cumulative_regret_var)
+      }
+      # Else, exploit, pick the best arm
+      else{
+         # Vector division to find average reward for each arm
+         avg_reward <- sum_of_rewards/number_of_selections
+         # Pick arm which has the max average reward
+         # Randomly break ties
+         break_ties <- which(avg_reward == max(avg_reward))
+         curr_action <- sample(break_ties, 1)
+         action_selected = append(action_selected, curr_action) 
+         number_of_selections[curr_action] = number_of_selections[curr_action] + 1 
+         reward = data[n, curr_action] 
+         sum_of_rewards[curr_action] = sum_of_rewards[curr_action] + reward
+         total_reward = total_reward + reward
+         reward_vec = append(reward_vec, total_reward)
+         cumulative_regret_var = actual*n - total_reward
+         cumulative_regret_vec = append(cumulative_regret_vec, cumulative_regret_var)
+         # Plot actions
+         if(n%%100 == 0) {
+            Sys.sleep(0.05)
+            hist(action_selected, main = "Bernoulli Bandit - Epsilon Greedy", 
+                 ylab = "Number of Selections", 
+                 xlab = "Action Selected",
+                 col = "darksalmon")
+         }
+      }
+   }
+   # learned winner
+   winner = which.max(sum_of_rewards)
+   # Total regret is the difference between the player’s accumulated reward and 
+   # the maximum the player could have obtained had they known the parameters 
+   regret = actual*iter - total_reward
+   return(list(total_reward = total_reward, winner = winner, 
+               total_regret = regret, regret_vec = cumulative_regret_vec,
+               reward_vec = reward_vec))
+}
+
+res2 <- epsilonGreedy(0.1, 5000, 10, data = sim_data, p = p)
+res2$total_regret
+res2$regret_vec
+res2$winner
+res2$total_reward
+# Plot of regret for each arm at each iteration
+plot(res2$regret_vec, main = "Cumulative Regret of Epsilon-Greedy",
+     xlab = "iterations", ylab = "cumulative regret")
+payout_greedy = res2$reward_vec
+####################################################################
+
+# Epsilon-Decreasing
+
+# Same as Epsilon-greedy except that epsilon decays over time. 
+# Resulting in more exploitative behavior in the beginning and 
+# more exploitative behavior towards the end. 
+
+epsilonDecreasing <- function(iter, num_arms, data, p){
+   # Create an empty integer vector to hold the actions we select
+   action_selected = integer(0) 
+   # Create a vector to hold the number of selections for each arm
+   number_of_selections = rep(1, num_arms) 
+   # Create a vector to hold the sum of rewards for each arm
+   sum_of_rewards = rep(1, num_arms)
+   # Create variable to track total reward 
+   total_reward = 0 
+   # Create vector to track reward 
+   reward_vec = integer(0)
+   # Create variable to track cumulative regret
+   cumulative_regret_var = 0
+   # Create vector to track cumulative regret
+   cumulative_regret_vec = integer(0)
+   # actual winner if the player knew the parameters
+   actual = p[6]
+   eps_vec = double(0)
+   for(n in 1:iter){
+      # Linear decay for eps
+      eps = 1/n
+      # Initialize the current action selected as 0
+      curr_action = 0
+      # Sample a value from Unif(0,1)
+      p <- runif(1)
+      # If p < eps, pick a random arm, explore
+      if(p < eps){
+         # Randomly select an arm
+         curr_action = sample(seq(num_arms), 1)
+         # Add the action we selected to the history vector
+         action_selected = append(action_selected, curr_action) 
+         # Update the number of times we selected this action
+         number_of_selections[curr_action] = number_of_selections[curr_action] + 1 
+         # Sample from the reward distribution of the action we selected
+         reward = data[n, curr_action] 
+         # Update the amount of rewards for the action selected (either 0 or 1)
+         sum_of_rewards[curr_action] = sum_of_rewards[curr_action] + reward
+         # Finally we update the total reward
+         total_reward = total_reward + reward
+         reward_vec = append(reward_vec, total_reward)
+         # Find and track cumulative regret for iteration n
+         cumulative_regret_var = actual*n - total_reward
+         cumulative_regret_vec = append(cumulative_regret_vec, cumulative_regret_var)
+      }
+      # Else, exploit, pick the best arm
+      else{
+         # Vector division to find average reward for each arm
+         avg_reward <- sum_of_rewards/number_of_selections
+         # Pick arm which has the max average reward
+         # Randomly break ties
+         break_ties <- which(avg_reward == max(avg_reward))
+         curr_action <- sample(break_ties, 1)
+         action_selected = append(action_selected, curr_action) 
+         number_of_selections[curr_action] = number_of_selections[curr_action] + 1 
+         reward = data[n, curr_action] 
+         sum_of_rewards[curr_action] = sum_of_rewards[curr_action] + reward
+         total_reward = total_reward + reward
+         reward_vec = append(reward_vec, total_reward)
+         cumulative_regret_var = actual*n - total_reward
+         cumulative_regret_vec = append(cumulative_regret_vec, cumulative_regret_var)
+         # Plot actions
+         if(n%%100 == 0) {
+            Sys.sleep(0.05)
+            hist(action_selected, main = "Bernoulli Bandit - Epsilon Decreasing", 
+                 ylab = "Number of Selections", 
+                 xlab = "Action Selected",
+                 col = "darksalmon")
+         }
+      }
+   }
+   # learned winner
+   winner = which.max(sum_of_rewards)
+   # Total regret is the difference between the player’s accumulated reward and 
+   # the maximum the player could have obtained had they known the parameters 
+   regret = actual*iter - total_reward
+   return(list(total_reward = total_reward, winner = winner, 
+               total_regret = regret, regret_vec = cumulative_regret_vec,
+               reward_vec = reward_vec))
+}
+
+res3 <- epsilonDecreasing(5000, 10, data = sim_data, p = p)
+res3$total_regret
+res3$regret_vec
+res3$winner
+res3$total_reward
+
+plot(res3$regret_vec, main = "Cumulative Regret of Epsilon-Decreasing",
+     xlab = "iterations", ylab = "cumulative regret")
+# Linear rate of decay for epsilon - this gave us linear regret 
+e <- seq(1:10000)/10000
+plot(seq(1:10000), e)
+
+payout_dec = res3$reward_vec
+
+####################################################################
+
+# Thompson Sampling
+
+# We assume the variants follow the Binomial distribution and according to 
+# Bayesian theory, their Conjugate prior distribution follows the Beta 
+# distribution with hyperparameters alpha = number of successes + 1 and 
+# beta = number of failures + 1.
+
+ThompsonSampling <- function(iter, num_arms, data, p){
+   # Create an empty integer vector to hold the actions we select
+   action_selected = integer(0) 
+   # Create a vector to hold the number of successes for each arm
+   number_of_successes = integer(num_arms) 
+   # Create a vector to hold the number of failures for each arm
+   number_of_failures = integer(num_arms)
+   # Create variable to track total reward 
+   total_reward = 0
+   # Create vector to track reward 
+   reward_vec = integer(0)
+   # Create a vector to hold the sum of rewards for each arm
+   sum_of_rewards = rep(1, num_arms)
+   # Create variable to track cumulative regret
+   cumulative_regret_var = 0
+   # Create vector to track cumulative regret
+   cumulative_regret_vec = integer(0)
+   # actual winner if the player knew the parameters
+   actual = p[6]
+   # At each round n, we find the number of successes and failures for each arm i
+   for (n in 1:iter) {
+      curr_action = 0
+      max_random = 0
+      for (i in 1:num_arms) {
+         # draw randomly from the Beta(number_of_successes, number_or_failures) 
+         # distribution for each arm
+         random_beta = rbeta(n = 1,
+                             shape1 = number_of_successes[i] + 1,
+                             shape2 = number_of_failures[i] + 1)
+         
+         # We select the arm that has the highest random_beta
+         if (random_beta > max_random) {
+            max_random = random_beta
+            curr_action = i
+            sum_of_rewards[curr_action] = sum_of_rewards[curr_action] + random_beta
+            # Plot actions
+            if(n%%200 == 0) {
+               Sys.sleep(0.05)
+               hist(action_selected, main = "Bernoulli Bandit - Thompson Sampling",
+                    ylab = "Number of Selections",
+                    xlab = "Action Selected",
+                    col = "darksalmon")
+            }
+
+            # Plot beta distributions 
+         }
+      }
+      action_selected = append(action_selected, curr_action)
+      reward = data[n, curr_action]
+      if (reward == 1) {
+         number_of_successes[curr_action] = number_of_successes[curr_action] + 1
+      } else {
+         number_of_failures[curr_action] = number_of_failures[curr_action] + 1
+      }
+      # Track total reward
+      total_reward = total_reward + reward
+      reward_vec = append(reward_vec, total_reward)
+      # Find and track cumulative regret for iteration n
+      cumulative_regret_var = actual*n - total_reward
+      cumulative_regret_vec = append(cumulative_regret_vec, cumulative_regret_var)
+   }
+   # predicted winner
+   winner = which.max(sum_of_rewards)
+   # Total regret is the difference between the player’s accumulated reward and 
+   # the maximum the player could have obtained had they known the parameters 
+   regret = actual*iter - total_reward
+   return(list(total_reward = total_reward, winner = winner, 
+               total_regret = regret, regret_vec = cumulative_regret_vec,
+               reward_vec = reward_vec, number_of_failures = number_of_failures,
+               number_of_successes = number_of_successes))
+}
+res4 <- ThompsonSampling(5000, 10, sim_data, p = p)
+res4$total_regret
+res4$regret_vec
+res4$winner
+res4$total_reward
+number_of_successes = res4$number_of_successes
+number_of_failures = res4$number_of_failures
+
+# TS plot of beta distributions
+library(ggplot2)
+dat <- data.frame(dens = c(rbeta(100, number_of_successes[1] + 1, number_of_failures[1] + 1), 
+                           rbeta(100, number_of_successes[2] + 1, number_of_failures[2] + 1), 
+                           rbeta(100, number_of_successes[3] + 1, number_of_failures[3] + 1), 
+                           rbeta(100, number_of_successes[4] + 1, number_of_failures[4] + 1), 
+                           rbeta(100, number_of_successes[5] + 1, number_of_failures[5] + 1), 
+                           rbeta(100, number_of_successes[6] + 1, number_of_failures[6] + 1), 
+                           rbeta(100, number_of_successes[7] + 1, number_of_failures[7] + 1), 
+                           rbeta(100, number_of_successes[8] + 1, number_of_failures[8] + 1), 
+                           rbeta(100, number_of_successes[9] + 1, number_of_failures[9] + 1), 
+                           rbeta(100, number_of_successes[10] + 1, number_of_failures[10] + 1)),
+                        arm = rep(c("1", "2", "3", "4", "5", "6", "7", "8", "9", "10"), each = 100))
+
+p <- ggplot(dat, aes(x = dens, fill = arm)) + geom_density(alpha = 0.5)
+p + ggtitle("Sampling Beta Distribution of each Arm") + xlab("p")
+payout_TS = res4$reward_vec
+
+# Plot of regret for each arm at each iteration
+plot(res4$regret_vec, main = "Cumulative Regret of Thompson Sampling",
+     xlab = "iterations", ylab = "cumulative regret")
+
+# Need to research more on this but another possible plot:
+# x <- seq(1:2500)
+# f1 <- res$regret_vec
+# Upper bound for regret?
+# f2 <- sqrt(num_arms*2500*log(x))
+# matplot(x, cbind(f1, f2), type = "l", col = c("black", "blue"),
+#        ylab = "Regret", xlab = "Number of iterations",
+#        main = "Regret bound for Thompson Sampling")
+
+
+# Comparison of payout
+x = seq(1:5000)
+matplot(x, cbind(payout_UCB1, payout_greedy, payout_dec, payout_TS), 
+        type = "l",
+        lty = 1,
+        lwd = 1.5, 
+        col = c("black", "blue", "green", "red"),
+        ylab = "Total Reward", xlab = "Number of iterations",
+        main = "Comparison of Payout")
+legend("topleft",
+       c("UCB1","Epsilon Greedy", "Epsilon Decreasing", "Thompson Sampling"),
+       fill=c("black", "blue", "green", "red"))
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
